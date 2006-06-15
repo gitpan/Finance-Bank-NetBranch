@@ -16,6 +16,11 @@ Finance::Bank::NetBranch - Manage your NetBranch accounts with Perl
   foreach (@accounts) {
       printf "%20s : %8s : USD %9.2f of %9.2f\n",
           $_->name, $_->account_no, $_->available, $_->balance;
+      my $days = 20;
+      for ($_->transactions(from => time - (86400 * $days), to => time)) {
+          printf "%10s | %20s | %80s : %9.2f, %9.2f\n",
+              $_->date->ymd, $_->type, $_->description, $_->amount, $_->balance;
+      }
   }
 
 =head1 DESCRIPTION
@@ -28,9 +33,8 @@ However, I do not have access to another NetBranch account with another bank,
 and so any feedback on the actual behavior of this module would be greatly
 appreciated.
 
-You will need either C<Crypt::SSLeay> or C<IO::Socket::SSL> installed 
-for HTTPS support to work. C<Alias>, C<HTML::Entities>, and C<WWW::Mechanize>
-are required.
+You will need either C<Crypt::SSLeay> or C<IO::Socket::SSL> installed for HTTPS
+support to work.
 
 =cut
 package Finance::Bank::NetBranch;
@@ -39,47 +43,58 @@ use strict;
 use warnings;
 
 use Alias 'attr';
+use Carp;
+use Date::Parse;
+use DateTime;
 use HTML::Entities;
 use WWW::Mechanize;
 $Alias::AttrPrefix = "main::";	# make use strict 'vars' palatable
 
-our $VERSION = 0.01;
+our $VERSION = 0.02;
 
 =head1 CLASS METHODS
+
+=head2 Finance::Bank::NetBranch
 
 =over 4
 
 =item new
 
-Creates a new Finance::Bank::NetBranch object; does not connect to the server.
+Creates a new C<Finance::Bank::NetBranch> object; does not connect to the server.
 
 =cut
 sub new {
 	my $type = shift;
-	my $self = bless { @_ }, $type;
-	$self;
+	bless {	@_ }, $type;
 }
+
+=back
+
+=head1 OBJECT METHODS
+
+=head2 Finance::Bank::NetBranch
+
+=over 4
 
 =item accounts
 
 Retrieves cached accounts information, connecting to the server if necessary.
 
 =cut
-sub accounts { my $self = shift; @{ $self->{accounts} || $self->refresh } }
+sub accounts { my $self = attr shift; @::accounts || @{ $self->_get_balances } }
 
-=item refresh
+=item _login
 
-Refreshes cached account information, returning the same data as accounts().
+Logs into the NetBranch site (internal use only)
 
 =cut
-sub refresh {
+sub _login {
 	my $self = attr shift;
-	my $m = WWW::Mechanize->new;
 
-	$m->get($::url)
+	$self->{mech} ||= WWW::Mechanize->new;
+	$self->{mech}->get($::url)
 		or die "Could not fetch login page URL '$::url'";
-
-	my $result = $m->submit_form(
+	my $result = $self->{mech}->submit_form(
 		form_name => 'frmLogin',
 		fields	=> {
 			USERNAME	=> $::account,
@@ -87,6 +102,32 @@ sub refresh {
 		},
 		button    => 'Login'
 	) or die "Could not submit login form as account '$::account'";
+
+	$::logged_in = 1;
+	$result;
+}
+
+=item _logout
+
+Logs out of the NetBranch site (internal use only)
+
+=cut
+sub _logout {
+	my $self = attr shift;
+	$self->{mech}->follow_link(text_regex => qr/Logout/)
+		or die "Failed to log out";
+	$::logged_in = 0;
+}
+
+=item _get_balances
+
+Gets account balance information (internal use only)
+
+=cut
+sub _get_balances {
+	my $self = attr shift;
+
+	my $result = $self->_login unless $::logged_in;
 
 	my ($user, undef, $private) = $result->content =~ m!
 		<h3>welcome\s*([^<]+)</h3>member\s*\#(\d+)\s*\(<b>([^<]+)</b>\)<br>
@@ -96,13 +137,16 @@ sub refresh {
 	my @a;
 	my @accounts = map {
 		my ($name, $account_no, $bal, $avail) = @$_;
-		$avail =~ s/,//; $bal =~ s/,//;
+		$avail =~ s/,//g; $bal =~ s/,//g; # Get rid of thousands separators
 		bless {
-			available	=> $avail,
-			balance		=> $bal,
 			account_no	=> $account_no,
+			# Detect trailing parenthesis (negative number)
+			available	=> /($avail)\)/ ? $1 : $avail,
+			balance		=>   /($bal)\)/ ? $1 : $bal,
 			name		=> $name,
+			parent		=> $self,
 			sort_code	=> $name,
+			transactions	=> [],
 		}, "Finance::Bank::NetBranch::Account";
 	} map {	# Return values three at a time in an arrayref
 		(push @a, $_) > 3 ? [ splice(@a, 0) ] : ()
@@ -114,24 +158,102 @@ sub refresh {
 				</span>\s*
 			</td>\s*
 			<td[^>]*?>\s*
-			# I don't actually know where the negative sign would be, happily
-				<span[^>]*?>\s*(?:-?\$([-\d,.]+))\s*</span>\s*
+				<span[^>]*?>\s* \(? \$ ([\d,.]+ \)? )\s*</span>\s*
 			</td>\s*
 			<td[^>]*?>\s*
-				<span[^>]*?>\s*(?:-?\$([-\d,.]+))\s*</span>\s*
+				<span[^>]*?>\s* \(? \$ ([\d,.]+ \)? )\s*</span>\s*
+			</td>\s*
+		</tr>\s*
+	!igmox);
+	
+	$self->_logout;
+
+	$self->{accounts} = \@accounts;
+}
+
+=item _get_transactions
+
+Gets transaction information, given start and end dates (internal use only)
+
+=cut
+sub _get_transactions {
+	my $self = attr shift;
+	my ($account, %args) = @_;
+
+	$self->_login unless $::logged_in;
+	$::mech->follow_link(text_regex => qr/Account History/)
+		or die "Failed to open account history mech";
+
+	my $page = $::mech->follow_link(
+		text_regex => qr/\($account->{account_no}\)/
+	) or die "Failed to open history for account '$account->{account_no}'";
+
+	# Convert dates into DateTime objects if necessary
+	my ($from, $to) = map {
+		ref($args{$_}) eq 'DateTime'
+			? $args{$_}
+			: DateTime->from_epoch(epoch => $args{$_})
+	} qw(from to);
+
+	sub pad0 { sprintf "%0.2d", shift }
+
+	$::mech->form_name('HistReq');
+	$::mech->select('FM', pad0($from->month));
+	$::mech->select('FD', $from->day);
+	$::mech->select('FY', $from->year);
+
+	$::mech->select('TM', pad0($to->month));
+	$::mech->select('TD', $to->day);
+	$::mech->select('TY', $to->year);
+
+	$page = $::mech->submit
+		or die "Could not submit history request form";
+
+	my @a;
+	# Reverse to put oldest transactions first
+	my @transactions = reverse map {
+		my ($date, $type, $desc, $amount, $bal) = @$_;
+		$date = DateTime->from_epoch(epoch => str2time($date));
+		$amount =~ s/,//g; $bal =~ s/,//g; # Get rid of thousands separators
+		bless {
+			# Detect trailing parenthesis (negative number)
+			amount		=> ($amount	=~ /([\d+.]+)\)/) ? -$1 : $amount,
+			balance		=> ($bal	=~ /([\d+.]+)\)/) ? -$1 : $bal,
+			date		=> $date,
+			description	=> decode_entities($desc),
+			parent		=> $account,
+			type		=> $type,
+		}, "Finance::Bank::NetBranch::Transaction";
+	} map {	# Return values five at a time in an arrayref
+		(push @a, $_) > 4 ? [ splice(@a, 0) ] : ()
+	} ($page->content =~ m!
+		<tr>\s*
+			(?:</span>\s*</td>)?\s*	# Incorrect markup
+			<td[^>]*>\s*
+				<span[^>]*>\s*([\d/]+?)\s*</span>\s*	# Date (m/d/yyyy)
+			</td>\s*
+			<td[^>]*>\s*
+				<span[^>]*>\s*([^<]+?)\s*</span>\s*	# Type
+			</td>\s*
+			<td[^>]*>\s*
+				<span[^>]*>\s*([^<]+?)\s*</span>\s*	# Description
+			</td>\s*
+			<td[^>]*>\s*
+				<span[^>]*>\s* \(? \$([\d,.]+ \)? )(?:&nbsp;|\s)*</span>\s*	# Amount
+			</td>\s*
+			<td[^>]*>\s*
+				<span[^>]*>\s* \(? \$([\d,.]+ \)? )(?:&nbsp;|\s)*</span>\s* # New Balanceª
 			</td>\s*
 		</tr>\s*
 	!igmox);
 
-	$m->follow_link(text_regex => qr/Logout/)
-		or die "Failed to log out";
-	
-	$self->{accounts} = \@accounts;
+	$self->_logout;
+	@transactions;
 }
 
 =back
 
-=head1 OBJECT METHODS
+=head2 Finance::Bank::NetBranch::Account
 
   $ac->name
   $ac->sort_code
@@ -146,9 +268,41 @@ other Finance::Bank::* modules.
 
 Return the account balance or available amount as a signed floating point value.
 
+  $ac->transactions(from => $start_date, to => $end_date)
+
+Retrieves C<Finance::Bank::NetBranch::Transaction> objects for the specified
+account object between two dates (unix timestamps or DateTime objects).
+
 =cut
 package Finance::Bank::NetBranch::Account;
 # Basic OO smoke-and-mirrors Thingy (from Finance::Card::Citibank)
+use Alias 'attr';
+use Carp;
+
+no strict;
+sub AUTOLOAD { my $self = shift; $AUTOLOAD =~ s/.*:://; $self->{$AUTOLOAD} }
+
+sub transactions ($%) {
+	my $self = attr shift;
+	my (%args) = @_;
+	$args{from} && $args{to}
+		or croak "Must supply from and to dates";
+	@::transactions =
+		(@::transactions || $::parent->_get_transactions($self, %args));
+}
+
+=head2 Finance::Bank::NetBranch::Transaction
+
+  $tr->date
+  $tr->type
+  $tr->description
+  $tr->amount
+  $tr->balance
+
+Return appropriate data from this transaction.
+
+=cut
+package Finance::Bank::NetBranch::Transaction;
 no strict;
 sub AUTOLOAD { my $self = shift; $AUTOLOAD =~ s/.*:://; $self->{$AUTOLOAD} }
 
@@ -169,7 +323,8 @@ to me, but is provided under B<NO GUARANTEE>, explicit or implied.
 
 =head1 BUGS
 
-Probably, but moreso lack of such incredibly dangerous features as transfers, scheduled transfers, etc., coming in a future release. Maybe.
+Probably, but moreso lack of such incredibly dangerous features as transfers,
+scheduled transfers, etc., coming in a future release. Maybe.
 
 Please report any bugs or feature requests to
 C<bug-finance-bank-netbranch at rt.cpan.org>, or through the web interface at

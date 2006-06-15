@@ -9,9 +9,12 @@ WriteMakefile(
     ABSTRACT_FROM       => 'lib/Finance/Bank/NetBranch.pm',
     PL_FILES            => {},
     PREREQ_PM => {
-        'Test::More' => 0,
         'Alias'	=> 0,
+        'Carp' => 0,
+        'Date::Parse' => 0,
+        'DateTime' => 0,
         'HTML::Entities' => 0,
+        'Test::More' => 0,
         'WWW::Mechanize' => 0,
     },
     dist                => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
