@@ -50,7 +50,7 @@ use HTML::Entities;
 use WWW::Mechanize;
 $Alias::AttrPrefix = "main::";	# make use strict 'vars' palatable
 
-our $VERSION = 0.02;
+our $VERSION = 0.03;
 
 =head1 CLASS METHODS
 
@@ -91,10 +91,10 @@ Logs into the NetBranch site (internal use only)
 sub _login {
 	my $self = attr shift;
 
-	$self->{mech} ||= WWW::Mechanize->new;
-	$self->{mech}->get($::url)
+	$::mech ||= WWW::Mechanize->new;
+	$::mech->get($::url)
 		or die "Could not fetch login page URL '$::url'";
-	my $result = $self->{mech}->submit_form(
+	my $result = $::mech->submit_form(
 		form_name => 'frmLogin',
 		fields	=> {
 			USERNAME	=> $::account,
@@ -102,6 +102,9 @@ sub _login {
 		},
 		button    => 'Login'
 	) or die "Could not submit login form as account '$::account'";
+
+	$::mech->uri =~ /welcome/i
+		or die "Failed to log in as account '$::account'";
 
 	$::logged_in = 1;
 	$result;
@@ -114,7 +117,7 @@ Logs out of the NetBranch site (internal use only)
 =cut
 sub _logout {
 	my $self = attr shift;
-	$self->{mech}->follow_link(text_regex => qr/Logout/)
+	$::mech->follow_link(text_regex => qr/Logout/)
 		or die "Failed to log out";
 	$::logged_in = 0;
 }
@@ -141,14 +144,14 @@ sub _get_balances {
 		bless {
 			account_no	=> $account_no,
 			# Detect trailing parenthesis (negative number)
-			available	=> /($avail)\)/ ? $1 : $avail,
-			balance		=>   /($bal)\)/ ? $1 : $bal,
+			available	=> ($avail	=~ /([\d+.]+)\)/) ? -$1 : $avail,
+			balance		=> ($bal	=~ /([\d+.]+)\)/) ? -$1 : $bal,
 			name		=> $name,
 			parent		=> $self,
 			sort_code	=> $name,
 			transactions	=> [],
 		}, "Finance::Bank::NetBranch::Account";
-	} map {	# Return values three at a time in an arrayref
+	} map {	# Return values four at a time in an arrayref
 		(push @a, $_) > 3 ? [ splice(@a, 0) ] : ()
 	} ($result->content =~ m!
 		<tr>\s*
@@ -190,14 +193,15 @@ sub _get_transactions {
 
 	# Convert dates into DateTime objects if necessary
 	my ($from, $to) = map {
-		ref($args{$_}) eq 'DateTime'
-			? $args{$_}
-			: DateTime->from_epoch(epoch => $args{$_})
-	} qw(from to);
+		ref($_) eq 'DateTime'
+			? $_
+			: DateTime->from_epoch(epoch => $_)
+	} @args{qw(from to)};
 
 	sub pad0 { sprintf "%0.2d", shift }
 
 	$::mech->form_name('HistReq');
+
 	$::mech->select('FM', pad0($from->month));
 	$::mech->select('FD', $from->day);
 	$::mech->select('FY', $from->year);
@@ -229,20 +233,25 @@ sub _get_transactions {
 	} ($page->content =~ m!
 		<tr>\s*
 			(?:</span>\s*</td>)?\s*	# Incorrect markup
-			<td[^>]*>\s*
-				<span[^>]*>\s*([\d/]+?)\s*</span>\s*	# Date (m/d/yyyy)
+			<td[^>]*?>\s*
+				# Date (m/d/yyyy)
+				<span[^>]*?>\s*([\d/]+?)\s*</span>\s*
 			</td>\s*
-			<td[^>]*>\s*
-				<span[^>]*>\s*([^<]+?)\s*</span>\s*	# Type
+			<td[^>]*?>\s*
+				# Type
+				<span[^>]*?>\s*([^<]+?)\s*</span>\s*
 			</td>\s*
-			<td[^>]*>\s*
-				<span[^>]*>\s*([^<]+?)\s*</span>\s*	# Description
+			<td[^>]*?>\s*
+				# Description
+				<span[^>]*?>\s*([^<]+?)\s*</span>\s*
 			</td>\s*
-			<td[^>]*>\s*
-				<span[^>]*>\s* \(? \$([\d,.]+ \)? )(?:&nbsp;|\s)*</span>\s*	# Amount
+			<td[^>]*?>\s*
+				# Amount
+				<span[^>]*?>\s* \(? \$([\d,.]+ \)? )(?:&nbsp;|\s)*</span>\s*
 			</td>\s*
-			<td[^>]*>\s*
-				<span[^>]*>\s* \(? \$([\d,.]+ \)? )(?:&nbsp;|\s)*</span>\s* # New Balanceª
+			<td[^>]*?>\s*
+				# New Balance (tm)
+				<span[^>]*?>\s* \(? \$([\d,.]+ \)? )(?:&nbsp;|\s)*</span>\s*
 			</td>\s*
 		</tr>\s*
 	!igmox);
@@ -255,23 +264,30 @@ sub _get_transactions {
 
 =head2 Finance::Bank::NetBranch::Account
 
-  $ac->name
-  $ac->sort_code
-  $ac->account_no
+=over 4
 
-Return the account name, sort code and the account number. The sort code is
-just the name in this case, but it has been included for consistency with 
-other Finance::Bank::* modules.
+=item name
 
-  $ac->balance
-  $ac->available
+=item sort_code
+
+=item account_no
+
+Return the account name, sort code or account number. The sort code is just the
+name in this case, but it has been included for consistency with other
+Finance::Bank::* modules.
+
+=item balance
+
+=item available
 
 Return the account balance or available amount as a signed floating point value.
 
-  $ac->transactions(from => $start_date, to => $end_date)
+=item transactions(from => $start_date, to => $end_date)
 
 Retrieves C<Finance::Bank::NetBranch::Transaction> objects for the specified
 account object between two dates (unix timestamps or DateTime objects).
+
+=back
 
 =cut
 package Finance::Bank::NetBranch::Account;
@@ -293,13 +309,21 @@ sub transactions ($%) {
 
 =head2 Finance::Bank::NetBranch::Transaction
 
-  $tr->date
-  $tr->type
-  $tr->description
-  $tr->amount
-  $tr->balance
+=over 4
+
+=item date
+
+=item type
+
+=item description
+
+=item amount
+
+=item balance
 
 Return appropriate data from this transaction.
+
+=back
 
 =cut
 package Finance::Bank::NetBranch::Transaction;

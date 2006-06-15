@@ -1,7 +1,7 @@
 Revision history for Finance-Bank-NetBranch
 
 0.01    2006-06-13T23:00:00-0500
-        First version, released on an unsuspecting world.
+		First version, released on an unsuspecting world.
 
 0.02    2006-06-14T23:06:50-0500
 		Cleaned up some POD, added support for getting transaction history.
@@ -9,3 +9,9 @@ Revision history for Finance-Bank-NetBranch
 		private helpers; I would like to see a way to handle the session
 		timeout and login only when necessary.
 
+0.03	2006-06-15T12:30:00-0500
+		Fixed silly bug in regular expression parsing of balances that would
+		have failed for negative numbers; added "non-greedy" attribute to some
+		regex atoms in transaction parser (not really necessary, but slightly
+		safer and parallel with balance parser). Made method PODs parallel
+		throughout.
