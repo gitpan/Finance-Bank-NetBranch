@@ -15,3 +15,6 @@ Revision history for Finance-Bank-NetBranch
 		regex atoms in transaction parser (not really necessary, but slightly
 		safer and parallel with balance parser). Made method PODs parallel
 		throughout.
+
+0.04	2006-06-16T10:46:05-0500
+		I think this fixes the Test::Pod::Coverage test breakage.

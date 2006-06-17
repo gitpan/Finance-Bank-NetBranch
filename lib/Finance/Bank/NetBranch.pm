@@ -50,7 +50,7 @@ use HTML::Entities;
 use WWW::Mechanize;
 $Alias::AttrPrefix = "main::";	# make use strict 'vars' palatable
 
-our $VERSION = 0.03;
+our $VERSION = 0.04;
 
 =head1 CLASS METHODS
 
@@ -282,6 +282,21 @@ Finance::Bank::* modules.
 
 Return the account balance or available amount as a signed floating point value.
 
+=cut
+
+package Finance::Bank::NetBranch::Account;
+use Alias 'attr';
+use Carp;
+
+no strict;
+
+=item AUTOLOAD
+
+Provides accessors (from Finance::Card::Citibank)
+
+=cut
+sub AUTOLOAD { my $self = shift; $AUTOLOAD =~ s/.*:://; $self->{$AUTOLOAD} }
+
 =item transactions(from => $start_date, to => $end_date)
 
 Retrieves C<Finance::Bank::NetBranch::Transaction> objects for the specified
@@ -290,14 +305,6 @@ account object between two dates (unix timestamps or DateTime objects).
 =back
 
 =cut
-package Finance::Bank::NetBranch::Account;
-# Basic OO smoke-and-mirrors Thingy (from Finance::Card::Citibank)
-use Alias 'attr';
-use Carp;
-
-no strict;
-sub AUTOLOAD { my $self = shift; $AUTOLOAD =~ s/.*:://; $self->{$AUTOLOAD} }
-
 sub transactions ($%) {
 	my $self = attr shift;
 	my (%args) = @_;
@@ -328,6 +335,12 @@ Return appropriate data from this transaction.
 =cut
 package Finance::Bank::NetBranch::Transaction;
 no strict;
+
+=item AUTOLOAD
+
+Provides accessors (from Finance::Card::Citibank)
+
+=cut
 sub AUTOLOAD { my $self = shift; $AUTOLOAD =~ s/.*:://; $self->{$AUTOLOAD} }
 
 1;
