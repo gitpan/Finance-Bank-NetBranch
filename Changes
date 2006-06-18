@@ -18,3 +18,10 @@ Revision history for Finance-Bank-NetBranch
 
 0.04	2006-06-16T10:46:05-0500
 		I think this fixes the Test::Pod::Coverage test breakage.
+
+0.05	2006-06-18T17:52:35-0500
+		Bothered to read the test failure report and realized I hadn't covered
+		pad0() and that my POD was broken. If I would just get
+		Test::Pod::Coverage and Test::Pod installed on this machine, I suppose
+		this might not happen.
+

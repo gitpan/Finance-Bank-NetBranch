@@ -50,7 +50,7 @@ use HTML::Entities;
 use WWW::Mechanize;
 $Alias::AttrPrefix = "main::";	# make use strict 'vars' palatable
 
-our $VERSION = 0.04;
+our $VERSION = 0.05;
 
 =head1 CLASS METHODS
 
@@ -198,15 +198,21 @@ sub _get_transactions {
 			: DateTime->from_epoch(epoch => $_)
 	} @args{qw(from to)};
 
-	sub pad0 { sprintf "%0.2d", shift }
+=item _pad0
+
+Pads a number to two digits with zeroes
+
+=cut
+
+	sub _pad0 { sprintf "%0.2d", shift }
 
 	$::mech->form_name('HistReq');
 
-	$::mech->select('FM', pad0($from->month));
+	$::mech->select('FM', _pad0($from->month));
 	$::mech->select('FD', $from->day);
 	$::mech->select('FY', $from->year);
 
-	$::mech->select('TM', pad0($to->month));
+	$::mech->select('TM', _pad0($to->month));
 	$::mech->select('TD', $to->day);
 	$::mech->select('TY', $to->year);
 
@@ -339,6 +345,8 @@ no strict;
 =item AUTOLOAD
 
 Provides accessors (from Finance::Card::Citibank)
+
+=back
 
 =cut
 sub AUTOLOAD { my $self = shift; $AUTOLOAD =~ s/.*:://; $self->{$AUTOLOAD} }
