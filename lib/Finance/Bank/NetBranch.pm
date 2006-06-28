@@ -2,6 +2,28 @@
 
 Finance::Bank::NetBranch - Manage your NetBranch accounts with Perl
 
+=cut
+package Finance::Bank::NetBranch;
+
+use strict;
+use warnings;
+
+use Alias 'attr';
+use Carp;
+use Date::Parse;
+use DateTime;
+use HTML::Entities;
+use WWW::Mechanize;
+$Alias::AttrPrefix = "main::";	# make use strict 'vars' palatable
+
+=head1 VERSION
+
+Version 0.06
+
+=cut
+
+our $VERSION = 0.06;
+
 =head1 SYNOPSIS
 
   use Finance::Bank::NetBranch;
@@ -35,22 +57,6 @@ appreciated.
 
 You will need either C<Crypt::SSLeay> or C<IO::Socket::SSL> installed for HTTPS
 support to work.
-
-=cut
-package Finance::Bank::NetBranch;
-
-use strict;
-use warnings;
-
-use Alias 'attr';
-use Carp;
-use Date::Parse;
-use DateTime;
-use HTML::Entities;
-use WWW::Mechanize;
-$Alias::AttrPrefix = "main::";	# make use strict 'vars' palatable
-
-our $VERSION = 0.05;
 
 =head1 CLASS METHODS
 
@@ -335,8 +341,6 @@ sub transactions ($%) {
 =item balance
 
 Return appropriate data from this transaction.
-
-=back
 
 =cut
 package Finance::Bank::NetBranch::Transaction;
