@@ -12,17 +12,18 @@ use Alias 'attr';
 use Carp;
 use Date::Parse;
 use DateTime;
-use HTML::Entities;
+use HTML::Entities qw(%entity2char _decode_entities);
+use HTML::TreeBuilder;
 use WWW::Mechanize;
 $Alias::AttrPrefix = "main::";	# make use strict 'vars' palatable
 
 =head1 VERSION
 
-Version 0.06
+Version 0.07
 
 =cut
 
-our $VERSION = 0.06;
+our $VERSION = 0.07;
 
 =head1 SYNOPSIS
 
@@ -87,7 +88,10 @@ sub new {
 Retrieves cached accounts information, connecting to the server if necessary.
 
 =cut
-sub accounts { my $self = attr shift; @::accounts || @{ $self->_get_balances } }
+sub accounts {
+	my $self = attr shift;
+	@::accounts || @{ $self->_get_balances }
+}
 
 =item _login
 
@@ -104,7 +108,7 @@ sub _login {
 		form_name => 'frmLogin',
 		fields	=> {
 			USERNAME	=> $::account,
-			PASSWORD	=> $::password,
+			password	=> $::password,
 		},
 		button    => 'Login'
 	) or die "Could not submit login form as account '$::account'";
@@ -123,7 +127,7 @@ Logs out of the NetBranch site (internal use only)
 =cut
 sub _logout {
 	my $self = attr shift;
-	$::mech->follow_link(text_regex => qr/Logout/)
+	$::mech->follow_link(text_regex => qr/Logo(ut|ff)/i)
 		or die "Failed to log out";
 	$::logged_in = 0;
 }
@@ -138,14 +142,17 @@ sub _get_balances {
 
 	my $result = $self->_login unless $::logged_in;
 
+	# Change to use HTML::TreeBuilder
 	my ($user, undef, $private) = $result->content =~ m!
 		<h3>welcome\s*([^<]+)</h3>member\s*\#(\d+)\s*\(<b>([^<]+)</b>\)<br>
 	!imox;
-	$user = decode_entities($user);
+	_decode_entities($user, +{ %entity2char, nbsp => ' ' });
 
-	my @a;
+	my $t = HTML::TreeBuilder->new;
 	my @accounts = map {
-		my ($name, $account_no, $bal, $avail) = @$_;
+		my ($name, $bal, $avail) = map { $_->as_text } $_->find('td');
+		($name, my $account_no) = ($name =~ m/^([^(]+)\(([^)]+)\).*$/);
+		$avail =~ s/\$//; $bal =~ s/\$//; # get rid of currency sign
 		$avail =~ s/,//g; $bal =~ s/,//g; # Get rid of thousands separators
 		bless {
 			account_no	=> $account_no,
@@ -157,27 +164,30 @@ sub _get_balances {
 			sort_code	=> $name,
 			transactions	=> [],
 		}, "Finance::Bank::NetBranch::Account";
-	} map {	# Return values four at a time in an arrayref
-		(push @a, $_) > 3 ? [ splice(@a, 0) ] : ()
-	} ($result->content =~ m!
-		<tr>\s*
-			<td[^>]*?>\s*
-				<span[^>]*?>\s*
-					<a[^>]*?>\s*([^\(<]+?\s+\(([^\)]+)\))\s*</a>\s*
-				</span>\s*
-			</td>\s*
-			<td[^>]*?>\s*
-				<span[^>]*?>\s* \(? \$ ([\d,.]+ \)? )\s*</span>\s*
-			</td>\s*
-			<td[^>]*?>\s*
-				<span[^>]*?>\s* \(? \$ ([\d,.]+ \)? )\s*</span>\s*
-			</td>\s*
-		</tr>\s*
-	!igmox);
-	
-	$self->_logout;
+	} do {
+		$t->parse($result->content);
+		$t->eof;
 
-	$self->{accounts} = \@accounts;
+		$t->look_down(
+			_tag => 'table',
+			sub {
+				my $table = $_[0];
+				$table->look_down(
+					_tag => 'th',
+					class => 'ColumnTitle',
+					sub { grep { /Balance/i } $_[0]->content_list },
+					sub { $_[0]->depth - $table->depth < 3 },
+				)
+			},
+		)->look_down(
+			_tag => 'tr',
+			sub { !$_[0]->find('th') },
+			sub { !grep { $_->as_text =~ /Total/i } $_[0]->content_list },
+		)
+	};
+	$t->delete;
+	$self->_logout;
+	$self->{accounts} = \@accounts
 }
 
 =item _get_transactions
@@ -193,7 +203,7 @@ sub _get_transactions {
 	$::mech->follow_link(text_regex => qr/Account History/)
 		or die "Failed to open account history mech";
 
-	my $page = $::mech->follow_link(
+	my $result = $::mech->follow_link(
 		text_regex => qr/\($account->{account_no}\)/
 	) or die "Failed to open history for account '$account->{account_no}'";
 
@@ -222,54 +232,49 @@ Pads a number to two digits with zeroes
 	$::mech->select('TD', $to->day);
 	$::mech->select('TY', $to->year);
 
-	$page = $::mech->submit
+	$result = $::mech->submit
 		or die "Could not submit history request form";
 
-	my @a;
+	my $t = HTML::TreeBuilder->new;
 	# Reverse to put oldest transactions first
 	my @transactions = reverse map {
-		my ($date, $type, $desc, $amount, $bal) = @$_;
+		my ($date, $type, $desc, $amount, $bal) = map { $_->as_text } $_->find('td');
 		$date = DateTime->from_epoch(epoch => str2time($date));
+		$amount =~ s/\$//; $bal =~ s/\$//; # get rid of currency sign
 		$amount =~ s/,//g; $bal =~ s/,//g; # Get rid of thousands separators
+		$desc =~ s/\x{A0}/ /g;
 		bless {
 			# Detect trailing parenthesis (negative number)
 			amount		=> ($amount	=~ /([\d+.]+)\)/) ? -$1 : $amount,
 			balance		=> ($bal	=~ /([\d+.]+)\)/) ? -$1 : $bal,
 			date		=> $date,
-			description	=> decode_entities($desc),
+			description	=> $desc,
 			parent		=> $account,
 			type		=> $type,
 		}, "Finance::Bank::NetBranch::Transaction";
-	} map {	# Return values five at a time in an arrayref
-		(push @a, $_) > 4 ? [ splice(@a, 0) ] : ()
-	} ($page->content =~ m!
-		<tr>\s*
-			(?:</span>\s*</td>)?\s*	# Incorrect markup
-			<td[^>]*?>\s*
-				# Date (m/d/yyyy)
-				<span[^>]*?>\s*([\d/]+?)\s*</span>\s*
-			</td>\s*
-			<td[^>]*?>\s*
-				# Type
-				<span[^>]*?>\s*([^<]+?)\s*</span>\s*
-			</td>\s*
-			<td[^>]*?>\s*
-				# Description
-				<span[^>]*?>\s*([^<]+?)\s*</span>\s*
-			</td>\s*
-			<td[^>]*?>\s*
-				# Amount
-				<span[^>]*?>\s* \(? \$([\d,.]+ \)? )(?:&nbsp;|\s)*</span>\s*
-			</td>\s*
-			<td[^>]*?>\s*
-				# New Balance (tm)
-				<span[^>]*?>\s* \(? \$([\d,.]+ \)? )(?:&nbsp;|\s)*</span>\s*
-			</td>\s*
-		</tr>\s*
-	!igmox);
+	} do {
+		$t->parse($result->content);
+		$t->eof;
 
+		$t->look_down(
+			_tag => 'table',
+			sub {
+				my $table = $_[0];
+				$table->look_down(
+					_tag => 'th',
+					class => 'ColumnTitle',
+					sub { grep { /New Balance/i } $_[0]->content_list },
+					sub { $_[0]->depth - $table->depth < 3 },
+				)
+			},
+		)->look_down(
+			_tag => 'tr',
+			sub { !$_[0]->find('th') },
+		)
+	};
+	$t->delete;
 	$self->_logout;
-	@transactions;
+	$self->{transactions} = \@transactions
 }
 
 =back
@@ -323,7 +328,7 @@ sub transactions ($%) {
 	$args{from} && $args{to}
 		or croak "Must supply from and to dates";
 	@::transactions =
-		(@::transactions || $::parent->_get_transactions($self, %args));
+		(@::transactions || @{ $::parent->_get_transactions($self, %args) });
 }
 
 =head2 Finance::Bank::NetBranch::Transaction
